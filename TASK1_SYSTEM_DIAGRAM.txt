@@ -1,0 +1,283 @@
+================================================================================
+  TASK 1: TEMPERATURE-RESPONSIVE LED SYSTEM WITH SEMAPHORE SYNCHRONIZATION
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           SYSTEM ARCHITECTURE                               │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+                    ┌─────────────────────────────────┐
+                    │      ESP32 YoloUNO Board        │
+                    │      (FreeRTOS Scheduler)       │
+                    └─────────────────────────────────┘
+                                    │
+                    ┌───────────────┴───────────────┐
+                    │                               │
+         ┌──────────▼─────────┐         ┌─────────▼──────────┐
+         │   Task 1: TEMP     │         │   Task 2: LED      │
+         │  Humidity Monitor  │         │     Blinky         │
+         │   (Producer)       │         │   (Consumer)       │
+         └────────────────────┘         └────────────────────┘
+                    │                               │
+                    │    xTempUpdateSemaphore       │
+                    └───────────►  ◄────────────────┘
+                          (Binary Semaphore)
+
+
+================================================================================
+                          TASK COMMUNICATION FLOW
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ STEP 1: Temperature Monitor Task (Producer)                                │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+    [START] ──► Initialize DHT20 sensor
+                        │
+                        ▼
+                 ┌──────────────┐
+                 │   Read DHT20 │ ◄─────────┐
+                 │   Sensor     │           │
+                 └──────┬───────┘           │
+                        │                   │
+                        ▼                   │
+                 ┌──────────────┐           │
+                 │   Temperature│           │
+                 │   Valid?     │           │
+                 └──────┬───────┘           │
+                        │                   │
+                 ┌──────┴────────┐          │
+                 │ YES        NO │          │
+                 ▼               ▼          │
+         ┌───────────────┐  [Log Error]    │
+         │ Update Global │                 │
+         │  Temperature  │                 │
+         └───────┬───────┘                 │
+                 │                         │
+                 ▼                         │
+         ┌───────────────┐                 │
+         │ xSemaphoreGive│                 │
+         │ (Signal LED)  │                 │
+         └───────┬───────┘                 │
+                 │                         │
+                 ▼                         │
+         ┌───────────────┐                 │
+         │ vTaskDelay    │                 │
+         │ (5 seconds)   │                 │
+         └───────┬───────┘                 │
+                 │                         │
+                 └─────────────────────────┘
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ STEP 2: LED Blink Task (Consumer)                                          │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+    [START] ──► Initialize LED GPIO (Pin 48)
+                        │
+                        ▼
+                 ┌──────────────┐
+                 │ xSemaphoreTake│ ◄─────────┐
+                 │ (Wait 100ms)  │           │
+                 └──────┬────────┘           │
+                        │                    │
+                 ┌──────┴─────────┐          │
+                 │ Acquired?      │          │
+                 └──────┬─────────┘          │
+                        │                    │
+                 ┌──────┴────────┐           │
+                 │ YES        NO │           │
+                 ▼               │           │
+         ┌───────────────┐       │           │
+         │ Read Global   │       │           │
+         │ Temperature   │       │           │
+         └───────┬───────┘       │           │
+                 │               │           │
+                 ▼               │           │
+         ┌───────────────┐       │           │
+         │ Determine LED │       │           │
+         │ Pattern Based │       │           │
+         │ on Temp Range │       │           │
+         └───────┬───────┘       │           │
+                 │               │           │
+                 └───────┬───────┘           │
+                         │                   │
+                         ▼                   │
+                 ┌───────────────┐           │
+                 │ LED ON        │           │
+                 │ (onTime ms)   │           │
+                 └───────┬───────┘           │
+                         │                   │
+                         ▼                   │
+                 ┌───────────────┐           │
+                 │ LED OFF       │           │
+                 │ (offTime ms)  │           │
+                 └───────┬───────┘           │
+                         │                   │
+                         └───────────────────┘
+
+
+================================================================================
+                      TEMPERATURE RANGE BEHAVIORS
+================================================================================
+
+┌──────────────┬──────────────┬──────────────┬──────────────┬──────────────┐
+│ Temperature  │   Condition  │  ON Time     │  OFF Time    │  Frequency   │
+├──────────────┼──────────────┼──────────────┼──────────────┼──────────────┤
+│   < 20°C     │     COLD     │   1000 ms    │   1000 ms    │   0.5 Hz     │
+│              │              │              │              │  (Slow)      │
+│              │     ████     │ ░░░░░░░░░░░░ │ ░░░░░░░░░░░░ │              │
+├──────────────┼──────────────┼──────────────┼──────────────┼──────────────┤
+│ 20°C - 28°C  │ COMFORTABLE  │    500 ms    │    500 ms    │    1 Hz      │
+│              │              │              │              │  (Medium)    │
+│              │   ████████   │ ░░░░░░░░░░░░ │ ░░░░░░░░░░░░ │              │
+├──────────────┼──────────────┼──────────────┼──────────────┼──────────────┤
+│ 28°C - 35°C  │     WARM     │    200 ms    │    200 ms    │   2.5 Hz     │
+│              │              │              │              │   (Fast)     │
+│              │ ████████████ │ ░░░░░░░░░░░░ │ ░░░░░░░░░░░░ │              │
+├──────────────┼──────────────┼──────────────┼──────────────┼──────────────┤
+│   > 35°C     │     HOT      │    100 ms    │    100 ms    │    5 Hz      │
+│              │              │              │              │(Very Fast)   │
+│              │█████████████ │ ░░░░░░░░░░░░ │ ░░░░░░░░░░░░ │              │
+└──────────────┴──────────────┴──────────────┴──────────────┴──────────────┘
+
+Legend: █ = LED ON    ░ = LED OFF
+
+
+================================================================================
+                     SEMAPHORE SYNCHRONIZATION DETAIL
+================================================================================
+
+┌───────────────────────────────────────────────────────────────────────────┐
+│                     xTempUpdateSemaphore (Binary)                         │
+├───────────────────────────────────────────────────────────────────────────┤
+│                                                                           │
+│  State:  [EMPTY] ──► xSemaphoreGive() ──► [FULL] ──► xSemaphoreTake()   │
+│                           │                    │            │             │
+│                           │                    │            │             │
+│                      [Producer]           [Available]  [Consumer]         │
+│                      (Temp Task)           (Signal)    (LED Task)         │
+│                                                                           │
+│  Purpose: Signal when new temperature data is available                  │
+│                                                                           │
+│  Benefits:                                                                │
+│    ✓ Event-driven (no polling)                                           │
+│    ✓ Immediate response to temperature changes                           │
+│    ✓ Prevents race conditions                                            │
+│    ✓ Clear task coordination                                             │
+│    ✓ Timeout protection (100ms)                                          │
+│                                                                           │
+└───────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+                            TIMING DIAGRAM
+================================================================================
+
+Time:    0s        5s       10s       15s       20s       25s
+         │         │         │         │         │         │
+Temp     ├─Read────┼─Read────┼─Read────┼─Read────┼─Read────┼─Read──►
+Task     │ Give    │ Give    │ Give    │ Give    │ Give    │ Give
+         │ Sem     │ Sem     │ Sem     │ Sem     │ Sem     │ Sem
+         │         │         │         │         │         │
+Semaphore│  │      │  │      │  │      │  │      │  │      │  │
+         │  └──┐   │  └──┐   │  └──┐   │  └──┐   │  └──┐   │  └──┐
+         │     │   │     │   │     │   │     │   │     │   │     │
+LED      │     Take│     Take│     Take│     Take│     Take│     Take
+Task     ├─────┴───┼─────┴───┼─────┴───┼─────┴───┼─────┴───┼─────┴──►
+         │ Blink.. │ Blink.. │ Blink.. │ Blink.. │ Blink.. │ Blink..
+         │ (pattern│ (pattern│ (pattern│ (pattern│ (pattern│ (pattern
+         │  based  │  based  │  based  │  based  │  based  │  based
+         │  on T)  │  on T)  │  on T)  │  on T)  │  on T)  │  on T)
+
+
+================================================================================
+                         HARDWARE CONNECTIONS
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                                                             │
+│   ┌─────────────────────────────────────────────────────────┐              │
+│   │              ESP32 YoloUNO Board                        │              │
+│   │                                                         │              │
+│   │  GPIO 48 ────────►  [LED] ──► GND                      │              │
+│   │                      (Built-in)                        │              │
+│   │                                                         │              │
+│   │  GPIO 11 (SDA) ────┐                                   │              │
+│   │                    │                                   │              │
+│   │  GPIO 12 (SCL) ────┼──►  [DHT20 Sensor]               │              │
+│   │                    │     (Temperature)                 │              │
+│   │  3.3V ─────────────┤     (Humidity)                   │              │
+│   │                    │                                   │              │
+│   │  GND ──────────────┘                                   │              │
+│   │                                                         │              │
+│   └─────────────────────────────────────────────────────────┘              │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+                        SERIAL MONITOR OUTPUT EXAMPLE
+================================================================================
+
+LED Blinky Task Started - Temperature Responsive Mode
+Temperature/Humidity Monitor Task Started
+Sensor: DHT20
+Update interval: 5 seconds
+----------------------------------------
+TEMP Task: Humidity: 45.2%  Temperature: 23.5°C
+TEMP Task: Semaphore given - LED task notified
+----------------------------------------
+LED Task: Temperature update received: 23.5°C
+LED Mode: COMFORTABLE - Medium blink (2Hz)
+----------------------------------------
+TEMP Task: Humidity: 46.1%  Temperature: 29.2°C
+TEMP Task: Semaphore given - LED task notified
+----------------------------------------
+LED Task: Temperature update received: 29.2°C
+LED Mode: WARM - Fast blink (5Hz)
+----------------------------------------
+
+
+================================================================================
+                              KEY FILES
+================================================================================
+
+Modified Files:
+├── include/
+│   └── global.h                 (Added semaphore declaration)
+├── src/
+│   ├── global.cpp              (Created semaphore)
+│   ├── led_blinky.cpp          (Complete rewrite with 4 behaviors)
+│   └── temp_humi_monitor.cpp   (Added semaphore signaling)
+
+Documentation:
+├── TASK1_DOCUMENTATION.md       (Complete technical documentation)
+├── TASK1_REPORT_SUMMARY.md      (Report-ready summary)
+└── TASK1_SYSTEM_DIAGRAM.txt     (This file - visual reference)
+
+
+================================================================================
+                          PROJECT INFORMATION
+================================================================================
+
+Board:        YoloUNO (ESP32-based)
+Framework:    Arduino + FreeRTOS
+Platform:     PlatformIO
+RTOS:         FreeRTOS (native ESP32)
+Language:     C++
+Build Tool:   PlatformIO
+
+Sensor:       DHT20 (I2C)
+Actuator:     LED (GPIO 48)
+Sync Method:  Binary Semaphore
+
+Tasks:        2 (Temperature Monitor + LED Blink)
+Priority:     Both at priority 2
+Stack Size:   2048 bytes each
+
+
+================================================================================
+                              END OF DIAGRAM
+================================================================================
+
